@@ -1766,7 +1766,7 @@ def test_mongo_port(host):
 ```
 Все взлетает)
 
-### HW11
+### HW12
 Новую ветку ДЗ начинаем с установки докера. Упражняемся:
 ```
 docker run - запуск контейнера
@@ -1873,3 +1873,111 @@ docker tag reddit:latest <your-login>/otus-reddit:1.0
 ```
 docker run --name reddit -d -p 9292:9292 <your-login>/otus-reddit:1.0
 ```
+
+### HW13
+Проверяем подключение к ранее созданному докер-хосту. Так как мы его сненсли для экономии средстве, стартуем его для начала занаво)
+```
+docker-machine start docker-host
+```
+Качаем архив заранее разбитого на микросервисы приложения, и создаем в каждой части Dockerfile:
+```
+./post-py/Dockerfile
+
+FROM python:3.6.0-alpine
+WORKDIR /app
+ADD . /app
+RUN pip install -r /app/requirements.txt
+ENV POST_DATABASE_HOST post_db
+ENV POST_DATABASE posts
+CMD ["python3", "post_app.py"]
+```
+```
+./comment/Dockerfile
+
+FROM ruby:2.2
+RUN apt-get update -qq && apt-get install -y build-essential
+ENV APP_HOME /app
+RUN mkdir $APP_HOME
+WORKDIR $APP_HOME
+ADD Gemfile* $APP_HOME/
+RUN bundle install
+COPY . $APP_HOME
+ENV COMMENT_DATABASE_HOST comment_db
+ENV COMMENT_DATABASE comments
+CMD ["puma"]
+```
+```
+./ui/Dockerfile
+
+FROM ruby:2.2
+RUN apt-get update -qq && apt-get install -y build-essential
+ENV APP_HOME /app
+RUN mkdir $APP_HOME
+WORKDIR $APP_HOME
+ADD Gemfile* $APP_HOME/
+RUN bundle install
+ADD . $APP_HOME
+ENV POST_SERVICE_HOST post
+ENV POST_SERVICE_PORT 5000
+ENV COMMENT_SERVICE_HOST comment
+ENV COMMENT_SERVICE_PORT 9292
+CMD ["puma"]
+```
+
+Качаем последний образ монги
+```
+docker pull mongo:latest
+```
+и начинаем собирать образы для контейнеров
+```
+docker build -t <your-dockerhub-login>/post:1.0 ./post-py
+```
+выхватываем ошибку пипа. Ошибка решается сообществом, а именно добавление в начала докерфайла слоя
+```
+RUN apk add --update gcc python python-dev py-pip build-base
+```
+продолжаем собирать образы
+```
+docker build -t <your-dockerhub-login>/comment:1.0 ./comment
+docker build -t <your-dockerhub-login>/ui:1.0 ./ui
+```
+Создаем отдельную сеть для приложения и запускаем контейнеры из собранных образов
+```
+docker network create reddit
+docker run -d --network=reddit --network-alias=post_db --network-alias=comment_db mongo:latest
+docker run -d --network=reddit --network-alias=post <your-dockerhub-login>/post:1.0
+docker run -d --network=reddit --network-alias=comment <your-dockerhub-login>/comment:1.0
+docker run -d --network=reddit -p 9292:9292 <your-dockerhub-login>/ui:1.0
+```
+Приложении работает, но внезапно оказывается, что образы весят как-то не оптимально много... Меняем докерфайл ui на следующего содержания
+```
+FROM ubuntu:16.04
+RUN apt-get update \
+&& apt-get install -y ruby-full ruby-dev build-essential \
+&& gem install bundler --no-ri --no-rdoc
+ENV APP_HOME /app
+RUN mkdir $APP_HOME
+WORKDIR $APP_HOME
+ADD Gemfile* $APP_HOME/
+RUN bundle install
+ADD . $APP_HOME
+ENV POST_SERVICE_HOST post
+ENV POST_SERVICE_PORT 5000
+ENV COMMENT_SERVICE_HOST comment
+ENV COMMENT_SERVICE_PORT 9292
+CMD ["puma"]
+```
+И пересобираем ui. Рещультат получше.
+Далее, грохаем контейнеры и собираем их занаво
+```
+docker kill $(docker ps -q)
+docker run -d --network=reddit --network-alias=post_db --network-alias=comment_db mongo:latest
+docker run -d --network=reddit --network-alias=post <your-dockerhub-login>/post:1.0
+docker run -d --network=reddit --network-alias=comment <your-dockerhub-login>/comment:1.0
+docker run -d --network=reddit -p 9292:9292 <your-dockerhub-login>/ui:2.0
+```
+Все вроде бы здорово, но при перезапуске приложение не сохраняет данные. Создадим волюм и повторим действия выше
+```
+docker volume create reddit_db
+```
+Теперь посты на сайте будут сохраняться даже при перезапуске контейнеров.
