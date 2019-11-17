@@ -1981,3 +1981,134 @@ docker run -d --network=reddit -p 9292:9292 <your-dockerhub-login>/ui:2.0
 docker volume create reddit_db
 ```
 Теперь посты на сайте будут сохраняться даже при перезапуске контейнеров.
+
+## HW14
+Как и всегда, начинаем с запуска остановленного докер хочта и перестановки сертификатов. Подключаемся к хосту. Упражняемся с запуском контейнеров c none-дравером.
+```
+docker run -ti --rm --network none joffotron/docker-net-tools -c ifconfig
+```
+Контейнер запускается, делает ifconfig и падает. Запускаем контейнер уже в сетевом пространстве хоста с целью посмотреть, что там выдаст конфиг
+```
+docker run -ti --rm --network host joffotron/docker-net-tools -c ifconfig
+```
+Картинка такая же, как если бахнуть на хосте ifconfig по ssh. Упражняемся с запуском контейнеров и просмотром их неймспейсов.
+Далее, создаем bridge-сеть (спойлер - она уже создана)
+```
+docker network create reddit --driver bridge
+```
+Запускаем контейнеры с использованием этой сети и приложка не работает...Запускаем контейнеры с присвоением сетевых алиасов при старте, что бы по ним ДНС докера знал о существовании контейнеров
+```
+docker run -d --network=reddit --network-alias=post_db --network-alias=comment_db mongo:latest
+docker run -d --network=reddit --network-alias=post <your-login>/post:1.0
+docker run -d --network=reddit --network-alias=comment <your-login>/comment:1.0
+docker run -d --network=reddit -p 9292:9292 <your-login>/ui:1.0
+```
+Все взлетело.
+Тренируемся с сетью, разбивая запущенные контейнеры на две сети. Для начала грохаем старые контейнеры
+```
+docker kill $(docker ps -q)
+```
+и создаем сети
+```
+docker network create back_net --subnet=10.0.2.0/24
+docker network create front_net --subnet=10.0.1.0/24
+```
+ запускаем контейнеры уже в них
+ ```
+docker run -d --network=front_net -p 9292:9292 --name ui <your-login>/ui:1.0
+docker run -d --network=back_net --name comment <your-login>/comment:1.0
+docker run -d --network=back_net --name post <your-login>/post:1.0
+docker run -d --network=back_net --name mongo_db --network-alias=post_db --network-alias=comment_db mongo:latest
+```
+Снова фейл. Теперь дело в том, что при инициализации контейнера докер подключает к нему только одну сеть. Контейнеры же post и comment для реализации с задумкой того, что ui не видит БД, нужно поместить в обе сети.
+```
+docker network connect front_net post
+docker network connect front_net comment
+```
+Теперь все работает. Далее с помощью bridge-utils на докер-хосте рассматриваем логику работы сейтей докера.
+После этих упражнений, ставим docker compouse и создаем ямлик с описанием будущей конфиги
+```
+#docker-compose.yml
+
+version: '3.3'
+services:
+  post_db:
+    image: mongo:3.2
+    volumes:
+      - post_db:/data/db
+    networks:
+      - reddit
+  ui:
+    build: ./ui
+    image: ${USERNAME}/ui:1.0
+    ports:
+      - 9292:9292/tcp
+    networks:
+      - reddit
+  post:
+    build: ./post-py
+    image: ${USERNAME}/post:1.0
+    networks:
+      - reddit
+  comment:
+    build: ./comment
+    image: ${USERNAME}/comment:1.0
+    networks:
+      - reddit
+
+volumes:
+  post_db:
+
+networks:
+  reddit:
+
+```
+Грохаме все контейнеры, подставляем переменную с именем и - вауля - вся приложка взлетает одной командой
+```
+docker kill $(docker ps -q)
+export USERNAME=<your-login>
+docker-compose up -d
+docker-compose ps
+```
+Меняем декларативное описание под наш кес с несколькими сетями и добавляем переменных
+```
+version: '3.3'
+services:
+  post_db:
+    image: mongo:3.2
+    volumes:
+      - post_db:/data/db
+    networks:
+      - reddit
+  ui:
+    build: ./ui
+    image: ${USERNAME}/ui:${VERSION1}
+    ports:
+      - ${PORT}:${PORT}/tcp
+    networks:
+      - reddit
+  post:
+    build: ./post-py
+    image: ${USERNAME}/post:${VERSION2}
+    networks:
+      - reddit
+  comment:
+    build: ./comment
+    image: ${USERNAME}/comment:${VERSION3}
+    networks:
+      - reddit
+
+volumes:
+  post_db:
+
+networks:
+  frontend-network:
+    ipam:
+      config:
+        - subnet: 10.0.1.0/24
+  backend-network:
+    ipam:
+      config:
+        - subnet: 10.0.2.0/24
+```
+Файлик стал покрасивее) Основной файл с переменными не забываем добавлять в gitignore, как пример оставляем другой файл...который внезапно в логике проверок Тревиса должен прям так и называться - .env.example)
